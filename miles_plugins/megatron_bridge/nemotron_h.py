@@ -132,6 +132,11 @@ def _build_bridge_subclass():
 
             if not os.environ.get("MILES_NEMOTRONH_KEEP_MTP"):
                 provider.mtp_num_layers = None
+                # This megatron.bridge version's MambaModelProvider.finalize() builds the
+                # MTP block from mtp_hybrid_override_pattern (refs Symbols.MTP_SEPARATOR,
+                # which does not exist -> AttributeError). Nulling mtp_num_layers alone is
+                # not enough; also clear the pattern so finalize() skips MTP entirely.
+                provider.mtp_hybrid_override_pattern = None
             return provider
 
         def mapping_registry(self):
@@ -194,8 +199,13 @@ def _install_mamba_model_loss_mask_shim() -> None:
 
     _orig_forward = MambaModel.forward
 
-    def forward(self, *args, loss_mask=None, **kwargs):
-        return _orig_forward(self, *args, **kwargs)
+    def forward(self, *args, loss_mask=None, mtp_kwargs=None, **kwargs):
+        # Route miles' GPT-style mtp_kwargs['mtp_labels'] into MambaModel.forward's
+        # mtp_labels arg so MTP actually trains in RL: the MTP loss is gated on
+        # mtp_labels (mirroring gpt_model.forward), while the main path keeps
+        # labels=None and returns logits for the policy-gradient loss.
+        mtp_labels = (mtp_kwargs or {}).get('mtp_labels')
+        return _orig_forward(self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs)
 
     MambaModel.forward = forward
     MambaModel._miles_loss_mask_shim_installed = True
